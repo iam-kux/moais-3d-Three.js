@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LH208L Cabin - Camera Placement</title>
+<style>
+:root{color-scheme:dark;--bg:#14161a;--panel:rgba(24,27,32,.9);--fg:#e8eaed;--mut:#9aa0a6;--acc:#2fbf8a;--line:#343a42;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+#view{position:fixed;inset:0}
+#view canvas{display:block}
+#ui{position:absolute;top:calc(env(safe-area-inset-top,0px) + 10px);left:10px;width:min(250px,62vw);max-height:calc(100% - 24px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;z-index:5}
+#ui h1{font-size:14px;margin:0 0 8px;color:#fff}
+#ui label{display:block;margin:3px 0;color:var(--fg)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}
+button{background:#232830;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:6px 4px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}
+input[type=range]{width:100%;accent-color:var(--acc)}
+output{float:right;color:var(--acc)}
+.lbl{background:#0b6b4a;color:#fff;font:600 11px system-ui,sans-serif;padding:2px 7px;border-radius:3px;white-space:nowrap;border:1px solid #2fe0a0}
+.sec{color:var(--mut);font-size:11px;margin-top:8px;text-transform:uppercase;letter-spacing:.05em}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<div id="view"></div>
+<div id="ui">
+  <h1>LH208L Cabin - Camera Placement</h1>
+  <div class="sec">Show</div>
+  <label><input type="checkbox" id="tFov" checked> FOV cones</label>
+  <label><input type="checkbox" id="tGlass" checked> Glass</label>
+  <label><input type="checkbox" id="tOp" checked> Operator</label>
+  <label><input type="checkbox" id="tLbl" checked> Labels</label>
+  <label><input type="checkbox" id="tRoof" checked> Roof</label>
+  <div class="sec">View</div>
+  <div class="row">
+    <button data-v="top">Top View</button><button data-v="front">Front View</button>
+    <button data-v="pov">Operator POV</button><button data-v="reset">Reset</button>
+  </div>
+  <div class="sec">Camera FOV</div>
+  <label>CAM 1 <output id="o0">55&deg;</output><input type="range" id="s0" min="30" max="90" value="55"></label>
+  <label>CAM 2 <output id="o1">55&deg;</output><input type="range" id="s1" min="30" max="90" value="55"></label>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {CSS2DRenderer, CSS2DObject} from 'three/addons/renderers/CSS2DRenderer.js';
+
+/* ---------- CONFIG (metres). X: bucket end (-) to engine end (+). Operator faces -Z (glass). ---------- */
+const CONFIG = {
+  cab: {L:1.6, W:1.1, H:1.75, post:0.06},
+  head: new THREE.Vector3(0, 1.2, 0.36),              // operator face target
+  cams: [
+    {name:'CAM 1 (A-PILLAR)', pos:[-0.73,1.45,-0.49], fov:55},
+    {name:'CAM 2 (B-PILLAR)', pos:[ 0.73,1.45,-0.49], fov:55}
+  ],
+  views: {                                            // p = camera position, t = orbit target
+    reset:{p:[6.8,2.4,6.2], t:[-0.4,-0.1,0]},
+    top:  {p:[0,4.4,0.9],  t:[0,0.9,0.1]},
+    front:{p:[0,1.2,-4.2], t:[0,0.6,0]},
+    pov:  {p:[0,1.22,0.2], t:[0,1.05,-0.6]}
+  }
+};
+const RED=0xc8321e, GREY=0x3a3e44, DARK=0x23262b, YEL=0xf2c200;
+
+/* ---------- Renderer, scene, lights ---------- */
+const host = document.getElementById('view');
+const T=THREE;
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.1;
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+host.appendChild(renderer.domElement);
+const labelRenderer = new CSS2DRenderer();
+Object.assign(labelRenderer.domElement.style,{position:'absolute',top:0,left:0,pointerEvents:'none'});
+host.appendChild(labelRenderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161a);
+scene.fog = new THREE.Fog(0x14161a, 10, 40);
+scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x222428, .8));
+const spot = new THREE.SpotLight(0xffc880, 80, 10, 0.9, 0.6, 2);
+spot.position.set(0,3,0.3); spot.target.position.set(0,0.8,0);
+scene.add(spot, spot.target);
+const GY=-1.02;                                                      // ground level (cab floor is y=0)
+const gnd=new THREE.Mesh(new THREE.CircleGeometry(40,48),new THREE.MeshStandardMaterial({color:0x24272c,roughness:.95}));
+gnd.rotation.x=-Math.PI/2; gnd.position.y=GY; gnd.receiveShadow=true; scene.add(gnd);
+const grid = new THREE.GridHelper(40, 80, 0x3a4047, 0x2a2f36);
+grid.position.y = GY+.003; scene.add(grid);
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 60);
+camera.position.set(...CONFIG.views.reset.p);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.minDistance = 0.1; controls.maxDistance = 14;
+controls.target.set(...CONFIG.views.reset.t);
+
+/* ---------- Helpers ---------- */
+const gc={};function rgeo(w,h,d){const k=[w,h,d].join(),r=Math.min(.06,Math.min(w,h,d)/3);if(gc[k])return gc[k];const g=new T.BoxGeometry(w,h,d,4,4,4),p=g.attributes.position,nm=g.attributes.normal,v=new T.Vector3(),c=new T.Vector3(),n=new T.Vector3(),hx=w/2-r,hy=h/2-r,hz=d/2-r;
+for(let i=0;i<p.count;i++){v.fromBufferAttribute(p,i);c.set(Math.max(-hx,Math.min(hx,v.x)),Math.max(-hy,Math.min(hy,v.y)),Math.max(-hz,Math.min(hz,v.z)));n.copy(v).sub(c);if(n.lengthSq()>1e-9){n.normalize();nm.setXYZ(i,n.x,n.y,n.z);n.multiplyScalar(r)}p.setXYZ(i,c.x+n.x,c.y+n.y,c.z+n.z)}return gc[k]=g}
+const M = (c,o={}) => new THREE.MeshStandardMaterial({color:c, roughness:.6, metalness:.2, ...o});
+function box(p,w,h,d,c,x,y,z,o){const m=new THREE.Mesh(rgeo(w,h,d),M(c,o));m.position.set(x,y,z);p.add(m);return m;}
+function cyl(p,r,h,c,x,y,z,o){const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,h,20),M(c,o));m.position.set(x,y,z);p.add(m);return m;}
+function tex(text,bg,fg,w=128,h=64,size=30){
+  const c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d');
+  g.fillStyle=bg;g.fillRect(0,0,w,h);g.fillStyle=fg;g.font=`700 ${size}px sans-serif`;
+  g.textAlign='center';g.textBaseline='middle';g.fillText(text,w/2,h/2);
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;}
+function plane(p,w,h,map,x,y,z){const m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),new THREE.MeshBasicMaterial({map}));m.position.set(x,y,z);p.add(m);return m;}
+
+/* ---------- CAB + MACHINE ---------- */
+const {L,W,H,post:P} = CONFIG.cab;
+const BODY=0xc9170c, TYRE=0x111214;
+const cab = new THREE.Group(); cab.name='cab'; scene.add(cab);
+
+// Floor pan with ribbed rubber mat
+box(cab,L,.06,W,DARK,0,0,0); box(cab,L-.2,.012,W-.2,0x15171a,0,.036,0);
+for(let x=-.65;x<=.66;x+=.1) box(cab,.02,.008,W-.24,0x2a2d32,x,.046,0);
+// Pillars (front A/B heavier) and rear posts
+for(const sx of [-1,1]){
+  box(cab,P+.02,H,P+.03,RED,sx*(L/2-P/2),H/2,-(W/2-P/2));
+  box(cab,P,H,P,RED,sx*(L/2-P/2),H/2,W/2-P/2);
+}
+// Lower panels: front, bucket end, engine end, rear (upper rear left open for access)
+box(cab,L-.1,.75,.04,BODY,0,.425,-W/2+.02); box(cab,.04,.7,W-.1,BODY,-L/2+.02,.37,0);
+box(cab,.04,.7,W-.1,BODY,L/2-.02,.37,0); box(cab,L-.1,.6,.04,BODY,0,.33,W/2-.02);
+box(cab,L-.1,.05,.06,RED,0,.8,-.52);
+
+// Glass with black rubber seals
+const glass = new THREE.Group(); cab.add(glass);
+function pane(x,y,z,w,h,ry=0){
+  const g=new THREE.Group(); g.position.set(x,y,z); g.rotation.y=ry; glass.add(g);
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(w,h,.01),new THREE.MeshStandardMaterial({color:0x88aaff,transparent:true,opacity:.25,roughness:.1,depthWrite:false})));
+  box(g,w+.04,.025,.03,0x0b0c0e,0,h/2,0); box(g,w+.04,.025,.03,0x0b0c0e,0,-h/2,0);
+  box(g,.025,h,.03,0x0b0c0e,-w/2,0,0); box(g,.025,h,.03,0x0b0c0e,w/2,0,0);
+}
+for(const x of [-.5,0,.5]) pane(x,1.26,-.53,.46,.92);
+pane(L/2-.02,1.2,0,.95,.8,Math.PI/2);                               // engine-end side window
+for(const x of [-.25,.25]) box(cab,.04,.92,.05,RED,x,1.26,-.53);
+
+// Roof: rounded edges, visor, work lights, beacon
+const roof = new THREE.Group(); cab.add(roof);
+box(roof,L+.1,.06,W+.1,RED,0,H-.03,0);
+for(const s of [-1,1]) cyl(roof,.035,L+.1,RED,0,H-.03,s*(W+.1)/2).rotation.z=Math.PI/2;
+box(roof,.04,.04,W,GREY,-.3,H-.08,0); box(roof,.04,.04,W,GREY,.3,H-.08,0);
+const vis=box(roof,L+.1,.03,.12,RED,0,H-.07,-.66); vis.rotation.x=.25;
+for(const x of [-.6,-.3,.3,.6]) box(roof,.1,.06,.05,0xfff6d0,x,H,-.6,{emissive:0xfff0b0,emissiveIntensity:.7});
+cyl(roof,.04,.07,0xff9900,-.6,H+.03,.3,{emissive:0xff8800,emissiveIntensity:.8});
+const dome=new THREE.Mesh(new THREE.SphereGeometry(.06,16,8,0,Math.PI*2,0,Math.PI/2),M(0xffffcc,{emissive:0xffffaa,emissiveIntensity:.8}));
+dome.rotation.x=Math.PI; dome.position.set(0,H-.06,.1); roof.add(dome);
+box(roof,.05,.05,.07,DARK,0,H-.085,-.42); cyl(roof,.014,.02,0x0a0a0a,0,H-.085,-.465).rotation.x=Math.PI/2;
+cyl(roof,.012,.2,DARK,.55,1.65,-.38);
+
+// Bucket-end mesh guard, A-pillar grab handle, extinguisher
+for(let z=-.46;z<=.47;z+=.08) cyl(cab,.008,1.0,0x777b82,-L/2+.03,1.22,z);
+box(cab,.02,.02,.95,0x777b82,-L/2+.03,.74,0); box(cab,.02,.02,.95,0x777b82,-L/2+.03,1.7,0);
+cyl(cab,.014,.55,YEL,-.7,1.05,-.4); box(cab,.02,.02,.1,YEL,-.7,.8,-.45); box(cab,.02,.02,.1,YEL,-.7,1.3,-.45);
+cyl(cab,.055,.32,0xd01c1c,-.35,.21,-.22); cyl(cab,.025,.06,0x111111,-.35,.4,-.22);
+box(cab,1.04,.04,.1,DARK,0,.92,-.25);                               // instrument hood
+
+// Contoured suspension seat
+cyl(cab,.06,.3,DARK,0,.2,.3); box(cab,.5,.06,.46,0x1b1d20,0,.1,.3);
+box(cab,.46,.1,.46,GREY,0,.45,.3,{roughness:.9});
+for(const s of [-1,1]){box(cab,.05,.09,.4,DARK,s*.245,.5,.3);box(cab,.05,.45,.08,DARK,s*.235,.82,.5);}
+const back=box(cab,.44,.62,.09,GREY,0,.82,.52,{roughness:.9}); back.rotation.x=-.1;
+box(cab,.22,.14,.06,GREY,0,1.2,.56,{roughness:.9});
+for(const s of [-1,1]){box(cab,.06,.05,.3,DARK,s*.28,.62,.3);box(cab,.03,.17,.04,DARK,s*.28,.53,.42);}
+
+/* ---------- MACHINE (ported from the reference LH208L model, re-oriented: bucket end = -X) ---------- */
+const machine=new THREE.Group(); machine.rotation.y=Math.PI; machine.position.set(.2,GY,0); scene.add(machine);
+(function(){
+const M=(c,m,r,o)=>new T.MeshStandardMaterial(Object.assign({color:c,metalness:m,roughness:r},o||{}));
+const paint=new T.MeshPhysicalMaterial({color:0xc9170c,metalness:.25,roughness:.38,clearcoat:1,clearcoatRoughness:.12}),steel=M(0x6a7075,.9,.35),dark=M(0x16181a,.2,.6),rubber=M(0x121212,0,.85),rod=M(0xd5d9dc,1,.18),
+glass=M(0x9bb7c4,.1,.1,{transparent:true,opacity:.3,side:T.DoubleSide}),led=M(0xffffee,0,.3,{emissive:0xffffcc,emissiveIntensity:1}),
+beacon=M(0xff8a00,0,.3,{emissive:0xff6a00,emissiveIntensity:1});
+const gc={};function rgeo(w,h,d){const k=[w,h,d].join(),r=Math.min(.06,Math.min(w,h,d)/3);if(gc[k])return gc[k];const g=new T.BoxGeometry(w,h,d,4,4,4),p=g.attributes.position,nm=g.attributes.normal,v=new T.Vector3(),c=new T.Vector3(),n=new T.Vector3(),hx=w/2-r,hy=h/2-r,hz=d/2-r;
+for(let i=0;i<p.count;i++){v.fromBufferAttribute(p,i);c.set(Math.max(-hx,Math.min(hx,v.x)),Math.max(-hy,Math.min(hy,v.y)),Math.max(-hz,Math.min(hz,v.z)));n.copy(v).sub(c);if(n.lengthSq()>1e-9){n.normalize();nm.setXYZ(i,n.x,n.y,n.z);n.multiplyScalar(r)}p.setXYZ(i,c.x+n.x,c.y+n.y,c.z+n.z)}return gc[k]=g}
+function box(w,h,d,m,x,y,z,p){const o=new T.Mesh(rgeo(w,h,d),m);o.position.set(x,y,z);o.castShadow=o.receiveShadow=true;p.add(o);return o}
+function cyl(r,l,m,x,y,z,p,ax){const g=new T.CylinderGeometry(r,r,l,20);if(ax=='z')g.rotateX(Math.PI/2);if(ax=='x')g.rotateZ(Math.PI/2);const o=new T.Mesh(g,m);o.position.set(x,y,z);o.castShadow=true;p.add(o);return o}
+function grp(name,desc,p,x=0,y=0,z=0){const g=new T.Group();g.name=name;g.userData={name,desc};g.position.set(x,y,z);p.add(g);return g}
+function anchor(p,x,y,z){const o=new T.Object3D();o.position.set(x,y,z);p.add(o);return o}
+const root=new T.Group();root.name='LHD_Root';machine.add(root);
+const R=.68,HX=.914,FA=.914; // tyre radius; hinge x on rear frame; front axle x in front-frame coords
+// ---- Rear section
+const rc=grp('Rear_Chassis','Welded steel rear frame; tanks (fuel 230 l, hydraulic oil 200 l) are welded to the rear frame.',root);
+box(3.75,.62,1.4,paint,-.9,.64,0,rc);box(.5,.5,.5,steel,-1.4,.3,0,rc);
+[-1,1].forEach(s=>{box(1.5,.12,.62,paint,0,R+.5,s*.945,rc);box(.12,.5,.62,paint,.75,R+.25,s*.945,rc)});
+const pt=grp('Powertrain_Compartment','Volvo TAD552VE diesel, 160 kW @ 2200 rpm, 910 Nm @ 1450 rpm, in-line 4, 5.13 l, turbo with intercooler. Dana C3000 converter, Dana RT14 power-shift transmission (2 gears fwd/rev).',root);
+box(2.2,.5,1.9,paint,-1.7,1.18,0,pt);for(let i=0;i<10;i++)box(.12,.02,1.75,dark,-2.7+i*.21,1.44,0,pt);const grn=M(0x1c9a3a,0,.5);[-1,1].forEach(s=>box(1.6,.03,.012,grn,-1.7,1.34,s*.96,pt));
+[-1,1].forEach(s=>[-2.3,-1.9,-1.5,-1.1].forEach(x=>box(.3,.28,.03,dark,x,1.2,s*.96,pt)));
+cyl(.07,.55,steel,-1.0,1.7,.75,pt);box(.2,.2,.2,steel,-1.0,1.48,.75,pt);
+const cool=grp('Cooling_Assembly','Liquid cooling radiator and oil cooler for hydraulic and transmission oil; pressure release in the radiator cap.',root);
+box(.12,.9,1.7,dark,-2.84,.95,0,cool);for(let i=0;i<7;i++)box(.04,.02,1.6,steel,-2.9,.6+i*.1,0,cool);
+// ---- Articulation + front section
+const art=grp('Articulation_Joint','Centre-point articulation, central hinge with adjustable upper bearing. Two 100 mm double-acting steering cylinders. Max articulation per drawing: 42°.',root,HX,0,0);
+cyl(.09,.8,steel,0,.65,0,art);cyl(.13,.05,steel,0,1.07,0,art);cyl(.13,.05,steel,0,.25,0,art);
+const front=grp('Front_Chassis','Welded steel front frame, fixed front axle.',root,HX,0,0);
+box(1.4,.55,1.3,paint,.75,.62,0,front);box(.6,.3,1.5,paint,1.5,.42,0,front);box(1.2,.1,1.1,dark,.85,.93,0,front);
+[-1,1].forEach(s=>{box(.25,.55,.1,paint,.55,1.05,s*.62,front);box(1.5,.1,.62,paint,FA,R+.5,s*.945,front)});
+const fax=grp('Front_Axle','Kessler D91 axle, limited-slip differential, fixed. Spring-applied, hydraulically released wet multidisc brakes.',front);
+cyl(.11,1.9,steel,FA,R,0,fax,'z');cyl(.2,.3,steel,FA,R,0,fax,'x');
+const rax=grp('Rear_Axle','Kessler D91 axle, no-spin differential, oscillating ±4°. Spring-applied, hydraulically released wet multidisc brakes.',root);
+cyl(.11,1.9,steel,0,R,0,rax,'z');cyl(.2,.3,steel,0,R,0,rax,'x');
+// wheels: 4x 17.5-25 tyres
+const wheels=[];
+const tyreProf=[[.32,-.22],[.52,-.225],[.62,-.2],[.675,-.14],[.69,-.06],[.69,.06],[.675,.14],[.62,.2],[.52,.225],[.32,.22]].map(p=>new T.Vector2(p[0],p[1]));
+const tyreG=new T.LatheGeometry(tyreProf,72);tyreG.rotateX(Math.PI/2);
+const blockG=new T.BoxGeometry(.09,.17,.16),nutG=new T.CylinderGeometry(.02,.02,.05,6);nutG.rotateX(Math.PI/2);
+function wheel(parent,x,z){const sp=new T.Group();sp.position.set(x,R,z);parent.add(sp);
+ const ty=new T.Mesh(tyreG,rubber);ty.castShadow=ty.receiveShadow=true;sp.add(ty);
+ const tr=new T.InstancedMesh(blockG,rubber,72),d=new T.Object3D();
+ for(let i=0;i<36;i++)for(let r=0;r<2;r++){const a=(i+r*.5)/36*Math.PI*2;d.position.set(Math.cos(a)*.7,Math.sin(a)*.7,r?.09:-.09);d.rotation.set(0,0,a);d.updateMatrix();tr.setMatrixAt(i*2+r,d.matrix)}
+ tr.castShadow=true;sp.add(tr);
+ cyl(.4,.5,steel,0,0,0,sp,'z');cyl(.22,.58,dark,0,0,0,sp,'z');
+ const nt=new T.InstancedMesh(nutG,steel,8);for(let i=0;i<8;i++){const a=i/8*Math.PI*2;d.position.set(Math.cos(a)*.3,Math.sin(a)*.3,z>0?.26:-.26);d.rotation.set(0,0,0);d.updateMatrix();nt.setMatrixAt(i,d.matrix)}sp.add(nt);
+ wheels.push(sp);return sp}
+const rw=grp('Rear_Wheels','Two 17.5 × 25 34-ply L5S tyres on 14.00-25 rims, oscillating axle.',root),fw=grp('Front_Wheels','Two 17.5 × 25 34-ply L5S tyres. Track (centre to centre) about 1.89 m.',front);
+const rwh=[wheel(rw,0,-.945),wheel(rw,0,.945)],fwh=[wheel(fw,FA,-.945),wheel(fw,FA,.945)];
+// ---- Boom, bucket
+const BP=[.55,1.1],BL=1.806,boom=grp('Lift_Arms','Straight boom (Z-bar style). Lift time 4.0 s, lowering 2.8 s. Breakout force lift 12 230 kg.',front,BP[0],BP[1],0);
+const bs=new T.Shape();[[0,-.14],[1.8,-.12],[1.9,0],[1.8,.12],[1.2,.45],[.7,.45],[.3,.2],[0,.14]].forEach((p,i)=>i?bs.lineTo(p[0],p[1]):bs.moveTo(p[0],p[1]));
+const bgm=new T.ExtrudeGeometry(bs,{depth:.1,bevelEnabled:true,bevelSize:.02,bevelThickness:.02,bevelSegments:3});bgm.translate(0,0,-.06);
+[-1,1].forEach(s=>{const m=new T.Mesh(bgm,paint);m.position.z=s*.62;m.castShadow=true;boom.add(m)});
+cyl(.09,1.4,steel,0,0,0,boom,'z');box(.2,.2,1.24,paint,.9,.1,0,boom);
+const blink=grp('Bucket_Linkage','Pivot pins, bell-crank mounts and bucket ears linking boom, dump cylinder and bucket.',boom);
+box(.25,.35,.1,steel,.7,.4,.3,blink);box(.25,.35,.1,steel,.7,.4,-.3,blink);
+const bk=grp('Bucket','Standard G.E.T. Half Arrow bucket, 3.3 m³, width 2676 mm, max material density 2330 kg/m³. Dumping time 4.4 s. Breakout force tilt 10 400 kg.',boom,BL,0,0);
+{const c=new T.CatmullRomCurve3([[1.25,-.45],[.7,-.43],[.1,-.38],[-.25,-.15],[-.36,.3],[-.3,.8]].map(p=>new T.Vector3(p[0],p[1],0))),pts=c.getPoints(30),pos=[],idx=[];
+pts.forEach(p=>pos.push(p.x,p.y,-1.3,p.x,p.y,1.3));for(let i=0;i<pts.length-1;i++){const a=i*2;idx.push(a,a+1,a+2,a+1,a+3,a+2)}
+const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(pos,3));g.setIndex(idx);g.computeVertexNormals();
+const m=new T.Mesh(g,new T.MeshPhysicalMaterial({color:0xc9170c,metalness:.25,roughness:.4,clearcoat:1,clearcoatRoughness:.15,side:T.DoubleSide}));m.castShadow=m.receiveShadow=true;bk.add(m);
+const sh=new T.Shape();[[1.25,-.45],[.1,-.38],[-.25,-.15],[-.36,.3],[-.3,.8],[.45,.8],[1.1,.15]].forEach((p,i)=>i?sh.lineTo(p[0],p[1]):sh.moveTo(p[0],p[1]));
+const sg=new T.ExtrudeGeometry(sh,{depth:.04,bevelEnabled:true,bevelSize:.015,bevelThickness:.01,bevelSegments:3});[-1.36,1.3].forEach(z=>{const s=new T.Mesh(sg,paint);s.position.z=z;s.castShadow=true;bk.add(s)})}
+box(.1,.05,2.64,steel,1.27,-.47,0,bk);for(let i=0;i<6;i++)box(.24,.07,.18,steel,1.32,-.47,-1.1+i*.44,bk);
+[-1,1].forEach(s=>box(.4,.4,.06,steel,-.1,.1,s*.65,bk));box(.1,.12,2.7,paint,-.32,.8,0,bk);[-1,1].forEach(s=>[[.35,.3],[.15,-.1]].forEach(p=>cyl(.06,.03,dark,p[0],p[1],s*1.37,bk,'z')));
+// ---- Cylinders (built in root space, endpoints follow anchors)
+function mkCyl(par,name,desc){const g=grp(name,desc,par);const bg=new T.CylinderGeometry(.085,.085,.55,16);bg.rotateX(Math.PI/2);const b=new T.Mesh(bg,steel);b.position.z=.275;b.castShadow=true;g.add(b);
+ const rg=new T.CylinderGeometry(.05,.05,1,12);rg.rotateX(Math.PI/2);const r=new T.Mesh(rg,rod);g.add(r);return{g,r}}
+const lcG=grp('Lift_Cylinders','Two 180 mm double-acting lift cylinders, polished chrome rods.',root),tcG=grp('Tilt_Cylinders','One 180 mm dump (tilt) cylinder.',root);
+const lc=[-1,1].map(s=>({c:mkCyl(lcG,'Lift_Cylinder','Lift cylinder, 180 mm bore.'),A:anchor(front,.8,.95,s*.45),B:anchor(boom,.9,.15,s*.45)}));
+const tc={c:mkCyl(tcG,'Tilt_Cylinder','Dump cylinder, 180 mm bore.'),A:anchor(boom,.7,.5,0),B:anchor(bk,-.3,.7,0)};
+const v1=new T.Vector3(),v2=new T.Vector3();let lenL=0,lenT=0;
+function upCyl(o){o.A.getWorldPosition(v1);o.B.getWorldPosition(v2);const d=v1.distanceTo(v2);o.c.g.position.copy(root.worldToLocal(v1.clone()));o.c.g.lookAt(v2);
+ const l=Math.max(d-.5,.05);o.c.r.scale.z=l;o.c.r.position.z=.5+l/2;return d}
+
+boom.rotation.z=-.368; bk.rotation.z=.368;                           // default pose from the reference model
+[-1,1].forEach(s=>box(.06,.14,.25,led,-2.92,1.0,s*.8,root));         // rear lights
+cyl(.08,.1,beacon,-2.4,1.52,-.7,root); cyl(.08,.1,beacon,-2.4,1.52,.7,root);
+machine.updateMatrixWorld(true); lc.forEach(upCyl); upCyl(tc);
+})();
+
+/* ---------- CONSOLE ---------- */
+const con = new THREE.Group(); con.name='console'; scene.add(con);
+const FZ=-.285;                                                    // z of dash face toward operator
+box(con,1.0,.6,.22,GREY,0,.6,-.4);                                 // dashboard
+box(con,.19,.12,.01,0x0c0c0c,-.33,.75,FZ);                         // 7" display
+plane(con,.17,.1,tex('LH208L','#0a1a2a','#4fc3f7'),-.33,.75,FZ+.006);
+box(con,.2,.15,.01,0x0c0c0c,-.05,.76,FZ);                          // touchscreen
+plane(con,.18,.13,tex('LHD','#1b1b1b','#ff7a1a',128,64,36),-.05,.76,FZ+.006);
+[['1',-.095],['2',-.025]].forEach(([n,x])=>{                       // buttons 1 and 2
+  box(con,.04,.03,.012,0x15171a,x,.65,FZ);
+  plane(con,.035,.026,tex(n,'#15171a','#ddd',32,24,20),x,.65,FZ+.008);
+});
+box(con,.3,.16,.01,DARK,.33,.76,FZ);                               // right switch cluster plate
+for(const x of [.25,.33]){                                         // 2 red e-stops
+  cyl(con,.035,.015,0x111111,x,.8,FZ+.01).rotation.x=Math.PI/2;
+  cyl(con,.026,.03,0xe01010,x,.8,FZ+.03).rotation.x=Math.PI/2;
+}
+cyl(con,.03,.02,0x111111,.42,.74,FZ+.01).rotation.x=Math.PI/2;     // red rotary switch
+cyl(con,.022,.03,0xe01010,.42,.74,FZ+.03).rotation.x=Math.PI/2;
+box(con,.012,.04,.01,0xffffff,.42,.745,FZ+.048);
+plane(con,.09,.06,tex('WARNING','#f2c200','#111',128,86,22),.36,.6,FZ+.006);   // warning labels
+plane(con,.09,.06,tex('SAFETY','#1f8a4c','#fff',128,86,22),.46,.6,FZ+.006);
+// Tablet display, upper right
+const tab=new THREE.Group(); tab.position.set(.55,1.5,-.32); tab.rotation.x=.25; con.add(tab);
+box(tab,.22,.15,.02,DARK,0,0,0);
+plane(tab,.19,.12,tex('SETTINGS','#101c28','#99aadd',128,64,18),0,0,.012);
+// Right joystick console
+box(con,.16,.5,.34,GREY,.52,.3,.2);
+const js=cyl(con,.012,.18,DARK,.52,.64,.14); js.rotation.x=-.2;
+const knob=new THREE.Mesh(new THREE.SphereGeometry(.03,16,12),M(0xe01010));
+knob.position.set(.52,.75,.12); con.add(knob);
+
+/* ---------- OPERATOR (toggle): seated, hi-vis coveralls, hard hat ---------- */
+const operator = new THREE.Group(); scene.add(operator);
+const OR=0xff6a00, SKIN=0x7a5038, SIL=0xc9ccd1, HELM=0xf2c200, Yv=new THREE.Vector3(0,1,0);
+const V=a=>new THREE.Vector3(...a);
+function limb(a,b,r,c){                                              // capsule between two points
+  const A=V(a),B=V(b),d=B.clone().sub(A),len=d.length();
+  const m=new THREE.Mesh(new THREE.CapsuleGeometry(r,Math.max(.001,len-2*r),4,12),M(c,{roughness:.85,metalness:0}));
+  m.position.copy(A).add(B).multiplyScalar(.5); m.quaternion.setFromUnitVectors(Yv,d.normalize()); operator.add(m);}
+function band(a,b,t,r){                                              // reflective stripe
+  const A=V(a),B=V(b),d=B.clone().sub(A).normalize();
+  const m=new THREE.Mesh(new THREE.CylinderGeometry(r+.004,r+.004,.03,16),M(SIL,{roughness:.35,metalness:.5}));
+  m.position.copy(A.lerp(B,t)); m.quaternion.setFromUnitVectors(Yv,d); operator.add(m);}
+function ball(r,c,x,y,z,sx=1,sy=1,sz=1){const m=new THREE.Mesh(new THREE.SphereGeometry(r,20,14),M(c,{roughness:.8,metalness:0}));m.position.set(x,y,z);m.scale.set(sx,sy,sz);operator.add(m);return m;}
+// torso + reflective bands + pelvis
+const torso=new THREE.Mesh(new THREE.CapsuleGeometry(.15,.26,6,16),M(OR,{roughness:.85,metalness:0}));
+torso.scale.set(1.15,1,.7); torso.position.set(0,.8,.4); torso.rotation.x=.08; operator.add(torso);
+for(const y of [.72,.86]){const b=new THREE.Mesh(new THREE.CylinderGeometry(.153,.153,.03,20),M(SIL,{roughness:.35,metalness:.5}));b.scale.set(1.15,1,.7);b.position.set(0,y,.4);b.rotation.x=.08;operator.add(b);}
+limb([-.11,.54,.4],[.11,.54,.4],.09,OR);
+// legs (seated), boots
+for(const s of [-1,1]){
+  limb([s*.1,.57,.4],[s*.1,.57,-.02],.075,OR); limb([s*.1,.57,-.02],[s*.1,.13,-.06],.06,OR);
+  band([s*.1,.57,-.02],[s*.1,.13,-.06],.55,.06);
+  box(operator,.1,.1,.26,0x1a1a1a,s*.1,.06,-.1,{roughness:.9}); box(operator,.11,.05,.1,0x111111,s*.1,.045,-.2,{roughness:.9});
+}
+// arms: right hand on joystick, left hand on thigh
+const SH=[[.19,1.0,.39],[-.19,1.0,.39]];
+ball(.058,OR,.19,1.0,.39); ball(.058,OR,-.19,1.0,.39);
+limb(SH[0],[.3,.78,.34],.05,OR); limb([.3,.78,.34],[.52,.77,.15],.043,OR); band([.3,.78,.34],[.52,.77,.15],.5,.043);
+limb(SH[1],[-.28,.78,.34],.05,OR); limb([-.28,.78,.34],[-.16,.65,.12],.043,OR); band([-.28,.78,.34],[-.16,.65,.12],.5,.043);
+ball(.04,0x1b1b1b,.52,.77,.13); ball(.04,0x1b1b1b,-.16,.65,.11);
+// neck, head, face, helmet, cap lamp
+const hp=CONFIG.head;
+cyl(operator,.042,.09,SKIN,0,1.12,.38,{roughness:.8,metalness:0});
+ball(.095,SKIN,hp.x,hp.y,hp.z,1,1.1,1.05);
+ball(.018,SKIN,0,hp.y-.01,hp.z-.1);                                  // nose
+for(const s of [-1,1]){ball(.01,0x111111,s*.035,hp.y+.015,hp.z-.088);ball(.02,SKIN,s*.095,hp.y,hp.z,.6,1,1);}
+box(operator,.15,.03,.01,0x101418,0,hp.y+.015,hp.z-.098,{transparent:true,opacity:.55}); // safety glasses
+const helm=new THREE.Mesh(new THREE.SphereGeometry(.108,24,12,0,Math.PI*2,0,Math.PI/2),M(HELM,{roughness:.4,metalness:.1}));
+helm.position.set(hp.x,hp.y+.03,hp.z); helm.scale.set(1,1,1.08); operator.add(helm);
+cyl(operator,.125,.01,HELM,hp.x,hp.y+.03,hp.z-.008,{roughness:.4});
+box(operator,.04,.03,.04,0x222222,0,hp.y+.1,hp.z-.095); ball(.012,0xffffff,0,hp.y+.1,hp.z-.118).material.emissive=new THREE.Color(0xffffff);
+
+/* ---------- CAMERAS + FOV CONES ---------- */
+const cams = [], labels = [];
+CONFIG.cams.forEach((cfg,i)=>{
+  const g=new THREE.Group(); g.name='camera'+(i+1); g.position.set(...cfg.pos); scene.add(g);
+  box(g,.05,.06,.08,0x0b6b4a,0,0,0);                               // green housing
+  cyl(g,.016,.02,0x0a0a0a,0,0,.045).rotation.x=Math.PI/2;         // dark lens
+  g.lookAt(CONFIG.head);                                           // +Z of group now points at the head
+  const fov=new THREE.Group(); fov.position.z=.05; g.add(fov);
+  const c={g,fov,deg:cfg.fov,len:g.position.distanceTo(CONFIG.head)*1.15};
+  cams.push(c); buildFov(c);
+  const div=document.createElement('div'); div.className='lbl'; div.textContent=cfg.name;
+  const lb=new CSS2DObject(div); lb.position.set(cfg.pos[0],cfg.pos[1]+.2,cfg.pos[2]); scene.add(lb); labels.push(lb);
+});
+function buildFov(c){                                              // rebuild translucent cone + dashed edges
+  for(const o of [...c.fov.children]){c.fov.remove(o);o.geometry.dispose();o.material.dispose();}
+  const h=c.len, r=h*Math.tan(THREE.MathUtils.degToRad(c.deg/2));
+  const geo=new THREE.ConeGeometry(r,h,40,1,true); geo.translate(0,-h/2,0); geo.rotateX(-Math.PI/2); // apex at origin, opens along +Z
+  c.fov.add(new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:0x2fe0a0,transparent:true,opacity:.2,side:THREE.DoubleSide,depthWrite:false})));
+  const pts=[];
+  for(let k=0;k<8;k++){const a=k/8*Math.PI*2;pts.push(new THREE.Vector3(),new THREE.Vector3(r*Math.cos(a),r*Math.sin(a),h));}
+  const lines=new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineDashedMaterial({color:0x2fe0a0,dashSize:.05,gapSize:.035}));
+  lines.computeLineDistances(); c.fov.add(lines);
+}
+// Highlighted overlap zone at the operator's head
+const marker=new THREE.Group(); marker.position.copy(CONFIG.head); marker.rotation.x=-Math.PI/2; scene.add(marker);
+marker.add(new THREE.Mesh(new THREE.CircleGeometry(.14,40),new THREE.MeshBasicMaterial({color:0x2fe0a0,transparent:true,opacity:.35,side:THREE.DoubleSide,depthWrite:false})));
+marker.add(new THREE.Mesh(new THREE.RingGeometry(.135,.155,40),new THREE.MeshBasicMaterial({color:0x7dffc8,side:THREE.DoubleSide})));
+
+/* ---------- Sun, shadows, environment reflections ---------- */
+const sun=new THREE.DirectionalLight(0xfff1dd,1.8); sun.position.set(5,9,6); sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048); Object.assign(sun.shadow.camera,{left:-7,right:7,top:7,bottom:-7,far:30}); sun.shadow.bias=-.0004;
+scene.add(sun);
+scene.traverse(o=>{if(o.isMesh&&!o.material.transparent){o.castShadow=o.receiveShadow=true;}});
+const pm=new THREE.PMREMGenerator(renderer);
+function mkEnv(base,panels,pi){const s=new T.Scene();s.add(new T.Mesh(new T.BoxGeometry(40,20,40),new T.MeshBasicMaterial({color:base,side:T.BackSide})));
+panels.forEach(p=>{const m=new T.Mesh(new T.PlaneGeometry(p[3],p[4]),new T.MeshBasicMaterial({color:new T.Color(pi,pi,pi),side:T.DoubleSide}));m.position.set(p[0],p[1],p[2]);m.lookAt(0,0,0);s.add(m)});return pm.fromScene(s,.03).texture}
+scene.environment=mkEnv(0x2a2f36,[[0,9.5,0,18,18],[-14,6,6,10,8],[14,5,-6,10,8]],3);
+
+/* ---------- UI wiring ---------- */
+const $=id=>document.getElementById(id);
+const toggles={
+  tFov:v=>{cams.forEach(c=>c.fov.visible=v);marker.visible=v;},
+  tGlass:v=>glass.visible=v, tOp:v=>operator.visible=v,
+  tLbl:v=>labels.forEach(l=>l.visible=v), tRoof:v=>roof.visible=v
+};
+for(const k in toggles) $(k).addEventListener('change',e=>toggles[k](e.target.checked));
+const setCheck=(id,v)=>{$(id).checked=v;toggles[id](v);};
+cams.forEach((c,i)=>$('s'+i).addEventListener('input',e=>{
+  c.deg=+e.target.value; $('o'+i).innerHTML=c.deg+'&deg;'; buildFov(c);
+}));
+
+let tw=null;
+function goTo(name){
+  const v=CONFIG.views[name];
+  tw={t0:performance.now(),dur:900,p0:camera.position.clone(),q0:controls.target.clone(),
+      p1:new THREE.Vector3(...v.p),q1:new THREE.Vector3(...v.t)};
+  if(name==='top') setCheck('tRoof',false);                        // roof would hide the top view
+  if(name==='reset') Object.keys(toggles).forEach(k=>setCheck(k,true));
+}
+document.querySelectorAll('button[data-v]').forEach(b=>b.addEventListener('click',()=>goTo(b.dataset.v)));
+
+/* ---------- Loop + resize ---------- */
+function resize(){
+  const w=host.clientWidth,h=host.clientHeight;
+  renderer.setSize(w,h); labelRenderer.setSize(w,h);
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize); resize();
+const ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+(function loop(){
+  requestAnimationFrame(loop);
+  if(tw){
+    const k=Math.min(1,(performance.now()-tw.t0)/tw.dur), e=ease(k);
+    camera.position.lerpVectors(tw.p0,tw.p1,e); controls.target.lerpVectors(tw.q0,tw.q1,e);
+    if(k>=1) tw=null;
+  }
+  controls.update();
+  renderer.render(scene,camera); labelRenderer.render(scene,camera);
+})();
+</script>
+</body>
+</html>
