@@ -20,6 +20,21 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 output{float:right;color:var(--acc)}
 .lbl{background:#0b6b4a;color:#fff;font:600 11px system-ui,sans-serif;padding:2px 7px;border-radius:3px;white-space:nowrap;border:1px solid #2fe0a0}
 .sec{color:var(--mut);font-size:11px;margin-top:8px;text-transform:uppercase;letter-spacing:.05em}
+#ui h1{display:flex;justify-content:space-between;align-items:center;gap:10px}
+#hd{margin:0;padding:5px 10px;font-size:12px;white-space:nowrap;flex:none}
+.chk{display:flex;flex-wrap:wrap;gap:2px 14px}
+#ui.closed{width:auto;padding:6px}
+#ui.closed>:not(h1){display:none}
+#ui.closed h1{margin:0}
+#ui.closed h1 span{display:none}
+@media (max-width:700px){
+  #ui{top:auto;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);left:10px;right:10px;width:auto;max-height:42vh;padding:8px 10px}
+  #ui.closed{right:auto}
+  #ui h1{font-size:13px}
+  button{padding:9px 6px}
+  input[type=range]{height:28px}
+  .lbl{font-size:10px;padding:1px 5px}
+}
 </style>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
@@ -28,13 +43,15 @@ output{float:right;color:var(--acc)}
 <body>
 <div id="view"></div>
 <div id="ui">
-  <h1>LH208L Cabin - Camera Placement</h1>
+  <h1><span>LH208L Cabin - Camera Placement</span><button id="hd" aria-label="Show or hide settings">Hide</button></h1>
   <div class="sec">Show</div>
+  <div class="chk">
   <label><input type="checkbox" id="tFov" checked> FOV cones</label>
   <label><input type="checkbox" id="tGlass" checked> Glass</label>
   <label><input type="checkbox" id="tOp" checked> Operator</label>
   <label><input type="checkbox" id="tLbl" checked> Labels</label>
   <label><input type="checkbox" id="tRoof" checked> Roof</label>
+  </div>
   <div class="sec">View</div>
   <div class="row">
     <button data-v="top">Top View</button><button data-v="front">Front View</button>
@@ -406,6 +423,12 @@ const ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
   controls.update();
   renderer.render(scene,camera); labelRenderer.render(scene,camera);
 })();
+/* ---------- Collapsible settings (starts closed on phones) ---------- */
+const ui=$('ui'), hd=$('hd'), isMobile=()=>matchMedia('(max-width:700px)').matches;
+function setOpen(o){ui.classList.toggle('closed',!o);hd.textContent=o?'Hide':'Settings';}
+hd.addEventListener('click',()=>setOpen(ui.classList.contains('closed')));
+document.querySelectorAll('button[data-v]').forEach(b=>b.addEventListener('click',()=>{if(isMobile())setOpen(false);}));
+setOpen(!isMobile());
 </script>
 </body>
 </html>
